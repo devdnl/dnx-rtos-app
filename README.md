@@ -1,2 +1,3 @@
 # dnx-rtos-apps
-Applications for dnx RTOS.
+Additional applications and libraries for dnx RTOS.
+
