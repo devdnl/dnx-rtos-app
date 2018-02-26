@@ -1,5 +1,5 @@
 /*=========================================================================*//**
-File     mkfs_eefs.c
+File     mkeefs.c
 
 Author   Daniel Zorychta
 
@@ -46,7 +46,8 @@ Brief    Format selected file by EEFS.
 #define ENTRY_TYPE_NONE         0xFF
 
 #define BLOCK_MAIN_MAGIC        0x53464545
-#define BLOCK_DIR_MAGIC         0x30524944
+#define BLOCK_MAGIC_DIR         0x30524944
+#define BLOCK_MAGIC_BITMAP      0x20504D42
 
 /*==============================================================================
   Local object types
@@ -64,20 +65,31 @@ Brief    Format selected file by EEFS.
  */
 
 /**
+ * Generic checksum block (calculation purposes).
+ */
+typedef struct PACKED {
+        uint8_t  buf[126];
+        uint16_t checksum;
+} block_chsum_t;
+
+/**
  * Main block definition (block 0).
  */
 typedef struct PACKED {
         uint32_t magic;         //!< FS identifier ('EEFS')
-        uint16_t blocks;        //!< number of memory blocks
+        uint16_t blocks;        //!< number of memory 128B blocks
         uint8_t  bitmap_blocks; //!< number of next bitmap blocks
-        uint8_t  bitmap[121];   //!< empty block bitmap
+        uint8_t  bitmap[119];   //!< empty block bitmap
+        uint16_t checksum;      //!< checksum
 } block_main_t;
 
 /**
  * Bitmap block definition.
  */
 typedef struct PACKED {
-        uint8_t  map[128];      //!< bitmap
+        uint32_t magic;         //!< block magic number
+        uint8_t  map[122];      //!< bitmap
+        uint16_t checksum;      //!< checksum
 } block_bitmap_t;
 
 /**
@@ -100,10 +112,11 @@ typedef struct PACKED{
         uint16_t    uid;        //!< user ID
         uint16_t    mode;       //!< mode
         uint16_t    parent;     //!< parent entry block number
-        uint16_t    entry_next; //!< next directory entries
+        uint16_t    next;       //!< next directory entries
         uint16_t    all_items;  //!< number of items in all chains
-        uint8_t     _[8];       //!< reserved
+        uint8_t     _[6];       //!< reserved
         dir_entry_t entry[4];   //!< directory entry
+        uint16_t    checksum;   //!< checksum
 } block_dir_t;
 
 /*==============================================================================
@@ -121,6 +134,7 @@ GLOBAL_VARIABLES_SECTION {
                 block_main_t   main;
                 block_bitmap_t bitmap;
                 block_dir_t    dir;
+                block_chsum_t  chsum;
         } block;
 };
 
@@ -137,6 +151,40 @@ GLOBAL_VARIABLES_SECTION {
 ==============================================================================*/
 //==============================================================================
 /**
+ * @brief  Function calculate fletcher 16 checksum.
+ *
+ * @param  data         buffer
+ * @param  bytes        buffer size
+ *
+ * @return Checksum.
+ */
+//==============================================================================
+static uint16_t fletcher16(uint8_t const *data, size_t bytes)
+{
+        uint16_t sum1 = 0xff, sum2 = 0xff;
+        size_t tlen;
+
+        while (bytes) {
+                tlen = ((bytes >= 20) ? 20 : bytes);
+                bytes -= tlen;
+                do {
+                        sum2 += sum1 += *data++;
+                        tlen--;
+                } while (tlen);
+
+                sum1 = (sum1 & 0xff) + (sum1 >> 8);
+                sum2 = (sum2 & 0xff) + (sum2 >> 8);
+        }
+
+        /* Second reduction step to reduce sums to 8 bits */
+        sum1 = (sum1 & 0xff) + (sum1 >> 8);
+        sum2 = (sum2 & 0xff) + (sum2 >> 8);
+
+        return (sum2 << 8) | sum1;
+}
+
+//==============================================================================
+/**
  * Show help message.
  *
  * @param  pname        program name.
@@ -144,9 +192,8 @@ GLOBAL_VARIABLES_SECTION {
 //==============================================================================
 static void show_help(char *pname)
 {
-        printf("Usage: %s <file> [mem-size]\n\n", pname);
-        puts("  file            file to format (device)");
-        puts("  mem-size        memory size in bytes (none for automatic size)");
+        printf("Usage: %s <file>\n", pname);
+        puts("  file\tfile to format (device)");
 }
 
 //==============================================================================
@@ -160,6 +207,11 @@ static void show_help(char *pname)
 //==============================================================================
 static int write_block(uint16_t block_pos)
 {
+        global->block.chsum.checksum = fletcher16(global->block.chsum.buf,
+                                                  sizeof(global->block.chsum.buf));
+
+        global->block.chsum.checksum ^= block_pos;
+
         fseek(global->file, block_pos * cast(fpos_t, BLOCK_SIZE), SEEK_SET);
 
         if (fwrite(&global->block, 1, BLOCK_SIZE, global->file) != BLOCK_SIZE) {
@@ -193,71 +245,57 @@ static void alloc_block(uint8_t bitmap[], uint16_t block)
 //==============================================================================
 static int mkfs(void)
 {
-        u16_t block_pos = 0;
-
         // calculate file system parameters
-        uint32_t blocks = (uint32_t)global->mem_size / BLOCK_SIZE;
+        uint32_t total_blocks = (uint32_t)global->mem_size / BLOCK_SIZE;
 
-        int32_t bmpblks = blocks - (sizeof(global->block.main.bitmap) * BLOCKS_IN_BYTE);
-        bmpblks         = bmpblks < 0 ? 0 : CEILING(bmpblks, BLOCK_SIZE * BLOCKS_IN_BYTE);
+        int32_t tmp = total_blocks - (sizeof(global->block.main.bitmap) * BLOCKS_IN_BYTE);
+
+        uint32_t extra_bmp_blks = tmp > 0 ? CEILING(tmp / BLOCKS_IN_BYTE, sizeof(global->block.bitmap.map)) : 0;
+
+        uint16_t root_dir_block_addr = 1 + extra_bmp_blks;
+
+        uint16_t used_blocks = 1 /*main*/ + extra_bmp_blks + 1 /*root dir*/;
 
         // create main block
         memset(&global->block.main, 0xFF, sizeof(global->block));
 
         global->block.main.magic          = BLOCK_MAIN_MAGIC;
-        global->block.main.blocks         = blocks;
-        global->block.main.bitmap_blocks  = bmpblks;
+        global->block.main.blocks         = total_blocks;
+        global->block.main.bitmap_blocks  = extra_bmp_blks;
 
-        u16_t used_blocks = bmpblks + 2; // bitmap blocks + 1 main block + 1 root dir
-
-        u8_t main_bitmap_blocks = min(sizeof(global->block.main.bitmap) * BLOCKS_IN_BYTE, used_blocks);
-
-        used_blocks -= main_bitmap_blocks;
-
-        for (u16_t block = 0; block < main_bitmap_blocks; block++) {
+        for (u16_t block = 0; block < used_blocks; block++) {
                 alloc_block(global->block.main.bitmap, block);
         }
 
-        if (write_block(block_pos++) != EXIT_SUCCESS) {
+        if (write_block(0) != EXIT_SUCCESS) {
                 return EXIT_FAILURE;
         }
 
-        // create bitmap blocks (additional bitmaps, memory size > 120832B)
+        // create extra bitmap blocks
         memset(&global->block.bitmap, 0xFF, sizeof(global->block.bitmap));
-        u16_t block_cnt = 0;
+        global->block.bitmap.magic = BLOCK_MAGIC_BITMAP;
 
-        while (used_blocks) {
-                alloc_block(global->block.main.bitmap, block_cnt);
-                block_cnt++;
-
-                if (block_cnt > sizeof(global->block.bitmap) * BLOCKS_IN_BYTE) {
-                        block_cnt = 0;
-
-                        if (write_block(block_pos++) != EXIT_SUCCESS) {
-                                return EXIT_FAILURE;
-                        }
-
-                        memset(&global->block.bitmap, 0xFF, sizeof(global->block.bitmap));
+        for (u16_t addr = 1; addr <= extra_bmp_blks; addr++) {
+                if (write_block(addr) != EXIT_SUCCESS) {
+                        return EXIT_FAILURE;
                 }
-
-                used_blocks--;
         }
 
         // create root
         time_t t = time(NULL);
 
         memset(&global->block.dir, 0xFF, sizeof(global->block.dir));
-        global->block.dir.magic      = BLOCK_DIR_MAGIC;
+        global->block.dir.magic      = BLOCK_MAGIC_DIR;
         global->block.dir.ctime      = t;
         global->block.dir.mtime      = t;
         global->block.dir.gid        = getgid();
         global->block.dir.uid        = getuid();
-        global->block.dir.mode       = 0777;
+        global->block.dir.mode       = 0666;
         global->block.dir.parent     = 0;
         global->block.dir.all_items  = 0;
-        global->block.dir.entry_next = 0;
+        global->block.dir.next       = 0;
 
-        return write_block(block_pos++);
+        return write_block(root_dir_block_addr);
 }
 
 //==============================================================================
@@ -268,18 +306,12 @@ static int mkfs(void)
  * @param argv      arguments
  */
 //==============================================================================
-int_main(mkfs_eefs, STACK_DEPTH_LOW, int argc, char *argv[])
+int_main(mkeefs, STACK_DEPTH_LOW, int argc, char *argv[])
 {
         if (argc < 2) {
                 show_help(argv[0]);
         } else {
-                if (  (argv[2] != NULL)
-                   && (  (sscanf(argv[2], "%u", &global->mem_size) != 1)
-                      || (global->mem_size == 0) ) ) {
-
-                        fprintf(stderr, "Wrong memory size: %u\n", global->mem_size);
-                        return EXIT_FAILURE;
-                }
+                int err = EXIT_FAILURE;
 
                 global->file = fopen(argv[1], "r+");
                 if (!global->file) {
@@ -292,12 +324,17 @@ int_main(mkfs_eefs, STACK_DEPTH_LOW, int argc, char *argv[])
                         fstat(global->file, &buf);
                         global->mem_size = buf.st_size;
 
-                        printf("Memory size set automatically to %d bytes.\n",
-                               cast(uint, global->mem_size)
-                        );
-                }
+                        if (global->mem_size >= 8388352) {
+                                printf("Too big disc for this file system!");
 
-                int err = mkfs();
+                        } else {
+                                printf("Memory size set automatically to %d bytes.\n",
+                                       cast(uint, global->mem_size)
+                                );
+
+                                err = mkfs();
+                        }
+                }
 
                 fclose(global->file);
 

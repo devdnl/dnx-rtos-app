@@ -101,7 +101,7 @@ static void client2host_transaction(int i)
                 buf.err  = ESUCC;
                 buf.size = part;
 
-                int s = ioctl(global->loop_dev, IOCTL_LOOP__HOST_READ_DATA_FROM_CLIENT, &buf);
+                int s = ioctl(fileno(global->loop_dev), IOCTL_LOOP__HOST_READ_DATA_FROM_CLIENT, &buf);
                 if (s == 0) {
                         n  += fwrite(global->buffer, 1, part, global->src_dev);
                         rd -= part;
@@ -146,7 +146,7 @@ static void host2client_transaction(int i)
                 buf.err  = ESUCC;
                 buf.size = n;
 
-                if (ioctl(global->loop_dev, IOCTL_LOOP__HOST_WRITE_DATA_TO_CLIENT, &buf) != 0) {
+                if (ioctl(fileno(global->loop_dev), IOCTL_LOOP__HOST_WRITE_DATA_TO_CLIENT, &buf) != 0) {
                         break;
                 } else {
                         wr -= n;
@@ -159,7 +159,7 @@ static void host2client_transaction(int i)
                 buf.data = NULL;
                 buf.size = 0;
                 buf.err  = errno;
-                ioctl(global->loop_dev, IOCTL_LOOP__HOST_WRITE_DATA_TO_CLIENT, &buf);
+                ioctl(fileno(global->loop_dev), IOCTL_LOOP__HOST_WRITE_DATA_TO_CLIENT, &buf);
         }
 
         if (global->log) {
@@ -186,7 +186,7 @@ static void ioctl_request(int i)
         LOOP_ioctl_response_t ioctl_resp;
 
         // send to source file the same IO request as was got from loop device
-        if (ioctl(global->src_dev,
+        if (ioctl(fileno(global->src_dev),
                   global->client_req.arg.ioctl.request,
                   global->client_req.arg.ioctl.arg) != 0) {
 
@@ -196,7 +196,7 @@ static void ioctl_request(int i)
                 ioctl_resp.err = ESUCC;
         }
 
-        ioctl(global->loop_dev, IOCTL_LOOP__HOST_SET_IOCTL_STATUS, &ioctl_resp);
+        ioctl(fileno(global->loop_dev), IOCTL_LOOP__HOST_SET_IOCTL_STATUS, &ioctl_resp);
 
         if (global->log) {
                 printf("%s\n", strerror(errno));
@@ -218,7 +218,7 @@ static void flush_request(int i)
 
         errno = 0;
         fflush(global->src_dev);
-        ioctl(global->loop_dev, IOCTL_LOOP__HOST_FLUSH_DONE, &errno);
+        ioctl(fileno(global->loop_dev), IOCTL_LOOP__HOST_FLUSH_DONE, &errno);
 
         if (global->log) {
                 printf("%s\n", strerror(errno));
@@ -250,7 +250,7 @@ static void stat_request(int i)
                 stat_resp.size = 0;
         }
 
-        ioctl(global->loop_dev, IOCTL_LOOP__HOST_SET_DEVICE_STATS, &stat_resp);
+        ioctl(fileno(global->loop_dev), IOCTL_LOOP__HOST_SET_DEVICE_STATS, &stat_resp);
 
         if (global->log) {
                 printf("size = %d: %s\n", static_cast<int>(stat.st_size), strerror(errno));
@@ -274,7 +274,7 @@ static void loopd(const char *src, const char *loop)
                 exit(EXIT_FAILURE);
         }
 
-        if (ioctl(global->loop_dev, IOCTL_LOOP__HOST_OPEN) != 0) {
+        if (ioctl(fileno(global->loop_dev), IOCTL_LOOP__HOST_OPEN) != 0) {
                 perror(loop);
                 fclose(global->loop_dev);
                 exit(EXIT_FAILURE);
@@ -283,12 +283,12 @@ static void loopd(const char *src, const char *loop)
         global->src_dev = fopen(src, "r+");
         if (!global->src_dev) {
                 perror(src);
-                ioctl(global->loop_dev, IOCTL_LOOP__HOST_CLOSE);
+                ioctl(fileno(global->loop_dev), IOCTL_LOOP__HOST_CLOSE);
                 fclose(global->loop_dev);
                 exit(EXIT_FAILURE);
         }
 
-        ioctl(stdin, IOCTL_VFS__NON_BLOCKING_RD_MODE);
+        ioctl(fileno(stdin), IOCTL_VFS__NON_BLOCKING_RD_MODE);
 
         puts("Enter 'q' to quit");
 
@@ -296,7 +296,7 @@ static void loopd(const char *src, const char *loop)
         while (getchar() != 'q') {
 
                 errno = 0;
-                if (ioctl(global->loop_dev, IOCTL_LOOP__HOST_WAIT_FOR_REQUEST, &global->client_req) != 0) {
+                if (ioctl(fileno(global->loop_dev), IOCTL_LOOP__HOST_WAIT_FOR_REQUEST, &global->client_req) != 0) {
                         perror(loop);
                         continue;
                 }
@@ -338,9 +338,9 @@ static void loopd(const char *src, const char *loop)
                 i++;
         }
 
-        ioctl(stdin, IOCTL_VFS__DEFAULT_RD_MODE);
+        ioctl(fileno(stdin), IOCTL_VFS__DEFAULT_RD_MODE);
 
-        ioctl(global->loop_dev, IOCTL_LOOP__HOST_CLOSE);
+        ioctl(fileno(global->loop_dev), IOCTL_LOOP__HOST_CLOSE);
         fclose(global->loop_dev);
         fclose(global->src_dev);
 }

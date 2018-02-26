@@ -50,8 +50,8 @@
 #define FTP_PASV_PORT_START     2121
 #define FTP_PASV_PORT_END       2131
 
-#define TIMEOUT_SEND            1000
-#define TIMEOUT_RECV            1000
+#define TIMEOUT_SEND            5000
+#define TIMEOUT_RECV            5000
 
 #define VERBOSE(...)            if (global->verbose) {printf(__VA_ARGS__);}
 
@@ -109,7 +109,7 @@ GLOBAL_VARIABLES_SECTION {
         uint16_t                dataport;
         char                   *RNFR;
         char                    PWD[128];
-        char                    buf[512];
+        char                    buf[1024];
         int                     bufsz;
         char                   *params;
         bool                    quit;
@@ -240,7 +240,7 @@ static int receive_file(SOCKET *socket, const char *mode)
 {
         socket_set_recv_timeout(socket, TIMEOUT_RECV);
 
-        int   err  = 0;
+        int   err  = 1;
         FILE *file = fopen(global->params, mode);
         if (file) {
 
@@ -249,11 +249,22 @@ static int receive_file(SOCKET *socket, const char *mode)
                         sz = socket_read(socket, global->buf, sizeof(global->buf));
                         if (sz > 0) {
                                 if (fwrite(global->buf, 1, sz, file) != (size_t)sz) {
-                                        err = 1;
+                                        VERBOSE("File write error %d", errno);
+                                        break;
                                 }
+                        } else {
+                                if (errno == ECONNABORTED) {
+                                        VERBOSE("Connection aborted - OK\n");
+                                        err = 0;
+
+                                } else {
+                                        VERBOSE("Connection error %d\n", errno);
+                                }
+
+                                break;
                         }
 
-                } while (sz > 0 && err == 0);
+                } while (sz > 0);
 
                 fclose(file);
         }
@@ -272,20 +283,41 @@ static int transmit_file(SOCKET *socket)
 {
         socket_set_send_timeout(socket, TIMEOUT_SEND);
 
-        int   err  = 0;
+        int   err  = 1;
         FILE *file = fopen(global->params, "r");
         if (file) {
 
-                int sz;
-                do {
-                        sz = fread(global->buf, 1, sizeof(global->buf), file);
-                        if (sz > 0) {
-                                if (socket_write(socket, global->buf, sz) < 0) {
-                                        err = 1;
-                                }
+                struct stat stat;
+                err = fstat(file, &stat);
+
+                while (!err && (stat.st_size > 0)) {
+
+                        int len = fread(global->buf, 1, sizeof(global->buf), file);
+                        if (len < 0) {
+                                VERBOSE("File read error %d\n", errno);
+                                break;
+
+                        } else if (len == 0) {
+                                VERBOSE("File end reached\n");
+                                break;
                         }
 
-                } while (sz > 0 && err == 0);
+                        stat.st_size -= len;
+
+                        NET_flags_t flags = NET_FLAGS__COPY;
+
+                        if (stat.st_size) {
+                                flags |= NET_FLAGS__MORE;
+                        }
+
+                        int n = socket_send(socket, global->buf, len, flags);
+
+                        if (n < 0) {
+                                VERBOSE("Socket write error %d\n", errno);
+                        }
+
+                        err = (n != len);
+                }
 
                 fclose(file);
         }

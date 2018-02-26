@@ -273,8 +273,8 @@ int_main(usbdevkbrd, STACK_DEPTH_LOW, int argc, char *argv[])
                 bool                   configured = false;
                 int                    operation  = -1;
 
-                ioctl(stdin, IOCTL_VFS__NON_BLOCKING_RD_MODE);
-                ioctl(ep0, IOCTL_USBD__START);
+                ioctl(fileno(stdin), IOCTL_VFS__NON_BLOCKING_RD_MODE);
+                ioctl(fileno(ep0), IOCTL_USBD__START);
 
                 while (true) {
                         int ch = getchar();
@@ -340,7 +340,7 @@ int_main(usbdevkbrd, STACK_DEPTH_LOW, int argc, char *argv[])
                                        sizeof(report));
                         }
 
-                        if (ioctl(ep0, IOCTL_USBD__GET_SETUP_PACKET, &setup) == 0) {
+                        if (ioctl(fileno(ep0), IOCTL_USBD__GET_SETUP_PACKET, &setup) == 0) {
                                 printf("SETUP: ");
                         } else {
                                 continue;
@@ -348,7 +348,7 @@ int_main(usbdevkbrd, STACK_DEPTH_LOW, int argc, char *argv[])
 
                         /* clears USB reset indicator */
                         bool was_reset = false;
-                        ioctl(ep0, IOCTL_USBD__WAS_RESET, &was_reset);
+                        ioctl(fileno(ep0), IOCTL_USBD__WAS_RESET, &was_reset);
 
                         if (setup.packet.wLength == 0) {
                                 int operation = -1;
@@ -358,8 +358,8 @@ int_main(usbdevkbrd, STACK_DEPTH_LOW, int argc, char *argv[])
                                         switch (setup.packet.bRequest) {
                                         case SET_ADDRESS:
                                                 printf(tostring(SET_ADDRESS)" (%d):", setup.packet.wValue);
-                                                if (ioctl(ep0, IOCTL_USBD__SEND_ZLP) == 0) {
-                                                        ioctl(ep0, IOCTL_USBD__SET_ADDRESS, &setup.packet.wValue);
+                                                if (ioctl(fileno(ep0), IOCTL_USBD__SEND_ZLP) == 0) {
+                                                        ioctl(fileno(ep0), IOCTL_USBD__SET_ADDRESS, &setup.packet.wValue);
                                                         puts(" OK");
                                                 } else {
                                                         puts(" ERROR");
@@ -368,7 +368,7 @@ int_main(usbdevkbrd, STACK_DEPTH_LOW, int argc, char *argv[])
 
                                         case SET_CONFIGURATION:
                                                 printf(tostring(SET_CONFIGURATION)" (%d):", setup.packet.wValue);
-                                                operation = ioctl(ep0, IOCTL_USBD__CONFIGURE_EP_1_7, &ep_cfg);
+                                                operation = ioctl(fileno(ep0), IOCTL_USBD__CONFIGURE_EP_1_7, &ep_cfg);
                                                 break;
                                         }
                                         break;
@@ -384,18 +384,18 @@ int_main(usbdevkbrd, STACK_DEPTH_LOW, int argc, char *argv[])
                                 }
 
                                 if (operation == 0) {
-                                        if (ioctl(ep0, IOCTL_USBD__SEND_ZLP) != 0) {
+                                        if (ioctl(fileno(ep0), IOCTL_USBD__SEND_ZLP) != 0) {
                                                 puts(" ERROR");
                                         } else {
                                                 puts(" OK");
                                         }
                                 } else if (operation == 1) {
                                         puts(" ERROR");
-                                        ioctl(ep0, IOCTL_USBD__SET_ERROR_STATUS);
+                                        ioctl(fileno(ep0), IOCTL_USBD__SET_ERROR_STATUS);
                                 } else {
                                         puts("UNKNOWN REQUEST");
                                         print_setup(&setup.packet);
-                                        ioctl(ep0, IOCTL_USBD__SET_ERROR_STATUS);
+                                        ioctl(fileno(ep0), IOCTL_USBD__SET_ERROR_STATUS);
                                 }
 
                         } else if ((setup.packet.bmRequestType & REQUEST_DIRECTION_MASK) == DEVICE_TO_HOST) {
@@ -449,7 +449,7 @@ int_main(usbdevkbrd, STACK_DEPTH_LOW, int argc, char *argv[])
                                 } else {
                                         puts(" UNKNOWN REQUEST [IN]");
                                         print_setup(&setup.packet);
-                                        ioctl(ep0, IOCTL_USBD__SET_ERROR_STATUS);
+                                        ioctl(fileno(ep0), IOCTL_USBD__SET_ERROR_STATUS);
                                 }
 
                         } else {
@@ -460,33 +460,33 @@ int_main(usbdevkbrd, STACK_DEPTH_LOW, int argc, char *argv[])
                                         printf("(%d/1)\n", fread(&report, 1, 1, ep0));
 
                                         if (report & USB_KEYBOARD_CAPS_LOCK_LED) {
-                                                ioctl(gpio, IOCTL_GPIO__SET_PIN, &GPIO_LED_WHITE);
+                                                ioctl(fileno(gpio), IOCTL_GPIO__SET_PIN, &GPIO_LED_WHITE);
                                         } else {
-                                                ioctl(gpio, IOCTL_GPIO__CLEAR_PIN, &GPIO_LED_WHITE);
+                                                ioctl(fileno(gpio), IOCTL_GPIO__CLEAR_PIN, &GPIO_LED_WHITE);
                                         }
 
                                         if (report & USB_KEYBOARD_NUM_LOCK_LED) {
-                                                ioctl(gpio, IOCTL_GPIO__SET_PIN, &GPIO_LED_GREEN);
+                                                ioctl(fileno(gpio), IOCTL_GPIO__SET_PIN, &GPIO_LED_GREEN);
                                         } else {
-                                                ioctl(gpio, IOCTL_GPIO__CLEAR_PIN, &GPIO_LED_GREEN);
+                                                ioctl(fileno(gpio), IOCTL_GPIO__CLEAR_PIN, &GPIO_LED_GREEN);
                                         }
 
                                         if (report & USB_KEYBOARD_SCROLL_LOCK_LED) {
-                                                ioctl(gpio, IOCTL_GPIO__SET_PIN, &GPIO_LED_RED);
+                                                ioctl(fileno(gpio), IOCTL_GPIO__SET_PIN, &GPIO_LED_RED);
                                         } else {
-                                                ioctl(gpio, IOCTL_GPIO__CLEAR_PIN, &GPIO_LED_RED);
+                                                ioctl(fileno(gpio), IOCTL_GPIO__CLEAR_PIN, &GPIO_LED_RED);
                                         }
                                         break;
 
                                 default:
                                         puts("UNKNOWN REQUEST [OUT]");
                                         print_setup(&setup.packet);
-                                        ioctl(ep0, IOCTL_USBD__SET_ERROR_STATUS);
+                                        ioctl(fileno(ep0), IOCTL_USBD__SET_ERROR_STATUS);
                                 }
                         }
                 }
 
-                ioctl(ep0, IOCTL_USBD__STOP);
+                ioctl(fileno(ep0), IOCTL_USBD__STOP);
         }
 
         if (ep0)
